@@ -1,0 +1,250 @@
+---
+title: "DCF Automation and CAPM in R"
+output: html_notebook
+---
+1. Packages.
+
+```{r}
+suppressMessages(install.packages('rvest'))
+suppressMessages(library(rvest))
+suppressMessages(install.packages('tidyverse'))
+suppressMessages(library(tidyverse))
+suppressMessages(install.packages("tidyquant"))
+suppressMessages(library(tidyquant))
+```
+
+2. Scraping EBIT.
+
+```{r}
+get_ebit <- function(symbol)
+{
+  
+  url_income <- paste0("https://finance.yahoo.com/quote/", symbol, "/financials?p=", symbol)
+  parsed_doc_ebit <- read_html(url_income)
+  nodes_ebit <- html_nodes(parsed_doc_ebit, xpath='//*[@id="Col1-1-Financials-Proxy"]/section/div[3]/div[1]/div/div[2]/div[23]/div[1]/div[3]') 
+  ebit <- html_text(nodes_ebit)
+  ebit <- as.numeric(gsub(",","", ebit))
+  
+
+  return(c(ebit))
+  
+}
+```
+
+3. Scraping balance sheet items' labels.
+
+```{r}
+get_labels <- function()
+{
+  
+  rows <- 13
+  elements <- c("Price")
+  url_balance <- "https://finance.yahoo.com/quote/AAPL/balance-sheet?p=AAPL"
+
+  for (row in 1:rows)
+    {
+      parsed_doc_table <- read_html(url_balance)
+      nodes_balance <- html_nodes(parsed_doc_table, 
+                            xpath=paste0('//*[@id="Col1-1-Financials-Proxy"]/section/div[3]/div[1]/div/div[2]/div[', row, ']/div[1]/div[1]'))
+
+      balance <- html_text(nodes_balance)
+      elements <- append(elements, balance)
+  }
+
+  elements <- c(elements, "EBIT")
+  return(elements)
+
+}
+```
+
+4. Scraping balance sheet data.
+
+```{r}
+get_balance_sheet_data <- function(symbol)
+{
+  rows <- 13
+  data <- c()
+  url_balance <- paste0("https://finance.yahoo.com/quote/", symbol, "/balance-sheet?p=", symbol)
+
+  for (row in 1:rows)
+  {
+    parsed_doc_table <- read_html(url_balance)
+    nodes_balance <- html_nodes(parsed_doc_table, 
+                            xpath=paste0('//*[@id="Col1-1-Financials-Proxy"]/section/div[3]/div[1]/div/div[2]/div[', row, ']/div[1]/div[2]'))
+
+    balance <- html_text(nodes_balance)
+    balance <- as.numeric(gsub(",", "", balance))
+    data <- append(data, balance)
+  }
+  
+  return(c(data))
+  
+}
+```
+
+5. Scraping current price.
+
+```{r}
+get_price <- function(symbol)
+{
+  
+  url_price <- paste0("https://finance.yahoo.com/quote/", symbol, "?p=", symbol, "&.tsrc=fin-srch")
+  parsed_doc_price <- read_html(url_price)
+  nodes_price <- html_nodes(parsed_doc_price, xpath='//*[@id="quote-header-info"]/div[3]/div[1]/div/fin-streamer[1]')
+                          
+  price <- html_text(nodes_price[1])
+  price <- as.numeric(price)
+  
+  return(c(price))
+}
+```
+
+6. Initial data frame creation.
+
+```{r}
+companies <- list("AAPL", "MSFT")
+columns <- list()
+
+for(company in companies)
+  
+{
+  column <- list(c(get_price(company), get_balance_sheet_data(company), get_ebit(company))) 
+  columns <- append(columns, column)
+}
+
+df <- data.frame(columns)
+colnames(df) <- c(companies)
+rownames(df) <- get_labels()
+```
+
+7. Scraping risk-free rate.
+
+```{r}
+get_rf <- function()
+{
+  
+  url_rf <- "https://ycharts.com/indicators/3_month_t_bill"
+  parsed_doc_rf <- read_html(url_rf)
+  nodes_rf <- html_nodes(parsed_doc_rf, xpath='/html/body/main/div/div[2]/div/div/div[2]')
+  rf <- html_text(nodes_rf)
+  rf <- gsub("\n", "", rf)
+  rf <- gsub(" ", "", rf)
+  rf <- as.list(strsplit(rf, "%"))[[1]]
+  rf <- as.numeric(rf[[1]])
+
+  return(rf)
+}
+```
+
+8. Scraping tax rate individually for each company.
+
+```{r}
+get_tax_rate <- function(symbol)
+{
+  
+  url_cash_flow <- paste0("https://finance.yahoo.com/quote/", symbol, "/cash-flow?p=", symbol)
+  parsed_doc_cf <- read_html(url_cash_flow)
+  nodes_ocf <- html_nodes(parsed_doc_cf, xpath='//*[@id="Col1-1-Financials-Proxy"]/section/div[3]/div[1]/div/div[2]/div[1]/div[1]/div[3]/span') 
+  ocf <- html_text(nodes_ocf)
+  ocf <- as.numeric(gsub(",","", ocf))
+  
+  nodes_tax <- html_nodes(parsed_doc_cf, xpath='//*[@id="Col1-1-Financials-Proxy"]/section/div[3]/div[1]/div/div[2]/div[5]/div[1]/div[3]/span') 
+  tax <- html_text(nodes_tax)
+  tax <- as.numeric(gsub(",","", tax))
+
+  tax_rate <- tax/ocf
+  
+  return(c(tax_rate))
+  
+}
+```
+
+9. Scraping FCF.
+
+```{r}
+get_fcf <- function(symbol)
+{
+  
+  url_cash_flow <- paste0("https://finance.yahoo.com/quote/", symbol, "/cash-flow?p=", symbol)
+  parsed_doc_fcf <- read_html(url_cash_flow)
+  
+  for(div in 1:12)
+  {
+    nodes_fcf_names <- html_nodes(parsed_doc_fcf, 
+                                  xpath=paste0('//*[@id="Col1-1-Financials-Proxy"]/section/div[3]/div[1]/div/div[2]/div[', 
+                                  as.character(div),']/div[1]/div[1]/div[1]/span'))
+    name <- html_text(nodes_fcf_names)
+    if(name == "Free Cash Flow")
+    {break}
+  }
+  
+  nodes_fcf <- html_nodes(parsed_doc_fcf,
+                          xpath=paste0('//*[@id="Col1-1-Financials-Proxy"]/section/div[3]/div[1]/div/div[2]/div[',
+                          as.character(div),']/div[1]/div[3]/span'))
+  
+  fcf <- html_text(nodes_fcf)
+  fcf <- as.numeric(gsub(",","", fcf))
+  
+  return(c(fcf))
+}
+```
+
+10. Scraping betas.
+
+```{r}
+get_beta <- function(symbol, time_period)
+{
+  today <- Sys.Date()
+  date <- as.POSIXlt(as.Date(today))
+  date$year <- date$year-time_period
+  x_ago <- as.Date(date)
+
+  market_open <- tq_get('SPY', from = x_ago, to = Sys.Date(), get = "stock.prices")$open
+  market_close <- tq_get('SPY', from = x_ago, to = Sys.Date(), get = "stock.prices")$close
+  market_return <- (market_close - market_open)/market_open
+  market_var <- var(market_return)
+
+  stock_open <- tq_get(symbol, from = x_ago, to = Sys.Date(), get = "stock.prices")$open
+  stock_close <- tq_get(symbol, from = x_ago, to = Sys.Date(), get = "stock.prices")$close
+  stock_return <- (stock_close - stock_open)/stock_open
+  ri_rm <- cov(stock_return, market_return)
+  beta <- ri_rm / market_var
+
+  return(beta)
+}
+```
+
+11. Unlevering the betas.
+
+```{r}
+unlever_beta <- function(symbol)
+{
+  debt_to_equity <- df["Net Debt", symbol] / df["Total Equity Gross Minority Interest", symbol] 
+  unlevered_beta <- get_beta(symbol, 5) / 1 + (1 - get_tax_rate(company)*debt_to_equity)
+  
+  return(unlevered_beta)
+}
+```
+
+12. Adding all the elements to the data frame.
+
+```{r}
+
+fcfs <- c()
+betas <- c()
+unlevered_betas <- c()
+for (company in companies)
+{
+  fcfs <- c(fcfs, get_fcf(company))
+  betas <- c(betas, get_beta(company, 5))
+  unlevered_betas <- c(unlevered_betas, unlever_beta(company))
+}
+df[nrow(df) + 1,] = fcfs
+rownames(df)[rownames(df) == nrow(df)] <- "FCF"
+df[nrow(df) + 1,] = betas
+rownames(df)[rownames(df) == nrow(df)] <- "Beta Levered"
+df[nrow(df) + 1,] = unlevered_betas
+rownames(df)[rownames(df) == nrow(df)] <- "Beta Unlevered"
+```
+
+
